@@ -21,7 +21,7 @@ A Python-based tool to automatically generate personalized PDF certificates from
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repository-url>
+    git clone https://github.com/11FaZe11/certification-sender
     cd certification-sender
     ```
 
@@ -62,3 +62,4 @@ A Python-based tool to automatically generate personalized PDF certificates from
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
