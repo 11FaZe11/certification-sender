@@ -5,37 +5,167 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from typing import Tuple
+from typing import Tuple, Optional
 from matplotlib import font_manager
+import shutil
+from urllib.parse import quote
 
-def get_system_fonts():
+
+def ensure_fonts_dir(fonts_dir: str = "fonts"):
+    """Create the fonts directory if it doesn't exist."""
+    if not os.path.exists(fonts_dir):
+        os.makedirs(fonts_dir)
+
+
+def register_font_file(font_path: str) -> Optional[str]:
+    """Register a TTF font file with reportlab and return the registered font name.
+    Ensures uniqueness if the name is already registered.
+    """
+    try:
+        font_name = os.path.splitext(os.path.basename(font_path))[0]
+        base_font_name = font_name
+        suffix = 1
+        while font_name in pdfmetrics.getRegisteredFontNames():
+            font_name = f"{base_font_name}_{suffix}"
+            suffix += 1
+        pdfmetrics.registerFont(TTFont(font_name, font_path))
+        return font_name
+    except Exception:
+        return None
+
+
+def download_google_font(font_family: str, fonts_dir: str = "fonts") -> str:
+    """Attempt to download a TTF for the requested font family from the google/fonts GitHub repository.
+    On success returns the registered ReportLab font name; otherwise returns an empty string.
+    """
+    # Local import so the module is optional at static-check time
+    try:
+        import requests
+    except Exception:
+        print("The 'requests' package is not installed. Install it (pip install -r requirements.txt) to enable automatic font downloads.")
+        return ""
+
+    ensure_fonts_dir(fonts_dir)
+    # Normalize family names for URL building
+    family_no_space = font_family.replace(" ", "").lower()
+    family_dash = font_family.replace(" ", "-").lower()
+    candidates = []
+
+    # Common filename patterns to try
+    base_names = [
+        f"{font_family}-Regular.ttf",
+        f"{font_family.title().replace(' ', '')}-Regular.ttf",
+        f"{font_family.replace(' ', '')}-Regular.ttf",
+        f"{family_no_space}-regular.ttf",
+        f"{family_dash}-regular.ttf",
+        f"{font_family}.ttf",
+        f"{font_family.title()}.ttf",
+        f"{font_family.replace(' ', '')}.ttf",
+    ]
+
+    # Try both ofl and apache folders
+    owners = ["ofl", "apache"]
+    for owner in owners:
+        for name in base_names:
+            candidates.append(f"https://github.com/google/fonts/raw/main/{owner}/{family_dash}/{quote(name)}")
+            candidates.append(f"https://github.com/google/fonts/raw/main/{owner}/{family_no_space}/{quote(name)}")
+            candidates.append(f"https://github.com/google/fonts/raw/main/{owner}/{font_family.replace(' ', '').lower()}/{quote(name)}")
+
+    # Also try direct family folder names with title casing (many Google fonts folders are the family name in lower-case)
+    candidates.append(f"https://github.com/google/fonts/raw/main/ofl/{family_dash}/{quote(font_family.title().replace(' ', '') + '-Regular.ttf')}")
+
+    for url in candidates:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200 and resp.content:
+                # Heuristic: size should be > 1KB
+                if len(resp.content) < 1024:
+                    continue
+                # Save file using the last part of the URL
+                filename = os.path.basename(url.split('?')[0])
+                # Some filenames are percent-encoded; unquote filename
+                try:
+                    from urllib.parse import unquote
+                    filename = unquote(filename)
+                except Exception:
+                    pass
+                local_path = os.path.join(fonts_dir, filename)
+                with open(local_path, 'wb') as f:
+                    f.write(resp.content)
+                # Try to register immediately; if registration fails, continue searching
+                registered = register_font_file(local_path)
+                if registered:
+                    print(f"Downloaded and registered font '{font_family}' as '{registered}' from {url}")
+                    return registered
+                else:
+                    # remove file if registration failed
+                    try:
+                        os.remove(local_path)
+                    except Exception:
+                        pass
+        except Exception:
+            # ignore network errors for individual URLs and keep trying
+            continue
+
+    # If we couldn't find via GitHub, try the Google Fonts CSS endpoint to locate woff2 resources (best-effort)
+    try:
+        css_url = f"https://fonts.googleapis.com/css2?family={quote(font_family)}"
+        resp = requests.get(css_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code == 200 and "url(" in resp.text:
+            # Find first url(...) occurrence
+            import re
+            urls = re.findall(r"url\((https:[^)]+)\)", resp.text)
+            for found in urls:
+                # Try to fetch and save — many are woff2; reportlab needs TTF, so skip woff2
+                if found.endswith('.ttf'):
+                    try:
+                        rr = requests.get(found, timeout=10)
+                        if rr.status_code == 200 and len(rr.content) > 1024:
+                            filename = os.path.basename(found.split('?')[0])
+                            local_path = os.path.join(fonts_dir, filename)
+                            with open(local_path, 'wb') as f:
+                                f.write(rr.content)
+                            registered = register_font_file(local_path)
+                            if registered:
+                                print(f"Downloaded and registered font '{font_family}' as '{registered}' from {found}")
+                                return registered
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+    return ""
+
+
+def get_system_fonts(fonts_dir: str = "fonts"):
     """
     Finds and registers all system TrueType fonts with reportlab
-    and returns a list of their names.
+    and returns a list of their names. Also registers fonts placed in the local `fonts/` folder.
     """
     font_paths = font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
     font_names = []
+    # Register system fonts
     for font_path in font_paths:
         try:
-            # The font name can be derived from the filename or from within the font file.
-            # For simplicity and uniqueness, we'll use a name based on the file.
-            # ReportLab will read the actual font name from the file.
-            font_name = os.path.splitext(os.path.basename(font_path))[0]
-            # To handle fonts with the same name but different styles (e.g., bold),
-            # we need to ensure unique names for registration.
-            # A simple way is to append a unique suffix if the name is already registered.
-            base_font_name = font_name
-            suffix = 1
-            while font_name in pdfmetrics.getRegisteredFontNames():
-                font_name = f"{base_font_name}_{suffix}"
-                suffix += 1
-
-            pdfmetrics.registerFont(TTFont(font_name, font_path))
-            font_names.append(font_name)
-        except Exception as e:
-            # Some fonts may be corrupted or not supported by reportlab
-            # print(f"Could not register font {font_path}: {e}")
+            registered = register_font_file(font_path)
+            if registered:
+                font_names.append(registered)
+        except Exception:
             pass
+
+    # Also register fonts from the project's fonts directory (if any)
+    if os.path.isdir(fonts_dir):
+        for root, _, files in os.walk(fonts_dir):
+            for f in files:
+                if f.lower().endswith('.ttf'):
+                    path = os.path.join(root, f)
+                    try:
+                        registered = register_font_file(path)
+                        if registered:
+                            font_names.append(registered)
+                    except Exception:
+                        pass
+
     return sorted(list(set(font_names)))
 
 def col_letter_to_index(letter):
@@ -142,25 +272,26 @@ def process_pdfs(excel_file, pdf_template, output_folder, name_col, phone_col,
                     skipped_count += 1
                     continue
 
-                # Clean the phone number for use as filename
+                # Prepare a title-cased display name and clean the phone number for use as filename
+                display_name = str(name).title()
                 number = str(number).strip().replace(" ", "").replace("+", "").replace("-", "")
 
                 # Create output filename using phone number
                 output_filename = f"{number}.pdf"
                 output_path = os.path.join(output_folder, output_filename)
 
-                # Add name to PDF
+                # Add name to PDF (use title-cased name)
                 add_text_to_pdf(
                     input_path=pdf_template,
                     output_path=output_path,
-                    text=str(name).title(),
+                    text=display_name,
                     box=box,
                     font_size=font_size,
                     font_name=font_name,
                     color_rgb=(0, 0, 0)
                 )
 
-                print(f"✅ Created: {output_filename} with name: {name}")
+                print(f"✅ Created: {output_filename} with name: {display_name}")
                 processed_count += 1
 
             except Exception as row_e:
@@ -195,7 +326,9 @@ def get_user_input_coordinates() -> Tuple[float, float, float, float]:
             print("Invalid input. Please enter numbers for the coordinates.")
 
 def get_user_input_font(available_fonts: list) -> str:
-    """Prompt user for font name."""
+    """Prompt user for font name.
+    If the font isn't registered, attempt to download it automatically from Google Fonts GitHub.
+    """
     print("\nA `FONTS_README.md` file has been created with a list of all available fonts.")
     print("You can copy a font name from there and paste it below.")
 
@@ -210,7 +343,14 @@ def get_user_input_font(available_fonts: list) -> str:
             if font.lower() == font_lower:
                 return font
 
-        print(f"Font '{choice}' not found. Please enter a valid font name from `FONTS_README.md`.")
+        # Not found locally — attempt to download and register it automatically
+        print(f"Font '{choice}' not found locally. Attempting to download and register it...")
+        registered_font = download_google_font(choice)
+        if registered_font:
+            print(f"Using downloaded font: {registered_font}")
+            return registered_font
+
+        print(f"Could not download font '{choice}'. Please enter another font name or install the font locally.")
 
 def get_user_input_font_size() -> int:
     """Prompt user for font size."""
