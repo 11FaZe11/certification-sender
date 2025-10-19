@@ -273,7 +273,9 @@ def process_pdfs(excel_file, pdf_template, output_folder, name_col, phone_col,
                     continue
 
                 # Prepare a title-cased display name and clean the phone number for use as filename
-                display_name = str(name).title()
+                # Only take the first 2 words from the name
+                name_parts = str(name).split()
+                display_name = ' '.join(name_parts[:2]).title()
                 number = str(number).strip().replace(" ", "").replace("+", "").replace("-", "")
 
                 # Create output filename using phone number
