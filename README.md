@@ -58,10 +58,12 @@ A Python-based tool to automatically generate personalized PDF certificates from
 
 5.  **Find your certificates:**
     -   The generated PDFs will be saved in the `output` folder (or the custom folder you specified), with filenames corresponding to the unique identifiers from your Excel sheet.
-    -   The best font is `Great Vibes`
+    -   The best font is `Great Vibes` with size `40`
+    -   `x1 = 100`, `y1 = 135`, `x2 = 325`, `y2 = 190` 
 
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
 
 
